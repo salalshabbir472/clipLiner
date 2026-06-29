@@ -117,6 +117,12 @@
   .btn-primary { background: var(--accent); color: #1a0f0a; width: 100%; margin-top: 14px; }
   .btn-primary:hover:not(:disabled) { opacity: 0.9; }
 
+  .btn-danger { background: #e08a8a; color: #2a1818; width: 100%; margin-top: 14px; }
+  .btn-danger:hover:not(:disabled) { opacity: 0.9; }
+
+  .btn-row { display: flex; gap: 10px; }
+  .btn-row > button { flex: 1; margin-top: 14px; }
+
   .btn-ghost {
     background: transparent;
     border: 1px solid var(--line);
@@ -330,6 +336,25 @@
     margin-bottom: 16px;
   }
   .range-readout span:last-child { color: var(--ink-dim); }
+
+  /* ---- Page 3: clip review/preview ---- */
+  #review-video-wrap {
+    width: 100%;
+    background: #000;
+    border-radius: 7px;
+    overflow: hidden;
+    margin-bottom: 4px;
+  }
+  #review-video { width: 100%; max-height: 380px; display: block; background: #000; }
+
+  .clip-meta {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-dim);
+    margin-top: 10px;
+    word-break: break-word;
+  }
+  .clip-meta b { color: var(--ink); }
 </style>
 </head>
 <body>
@@ -430,6 +455,33 @@
     </div>
 
     <button class="btn-ghost" id="back-btn">← start over</button>
+  </div>
+
+  <!-- ========== PAGE 3: review saved clip ========== -->
+  <div id="page-3" style="display:none;">
+    <div class="panel">
+      <div class="panel-label"><span class="dot done"></span> REVIEW CLIP</div>
+
+      <div id="review-video-wrap">
+        <video id="review-video" controls playsinline></video>
+      </div>
+
+      <div class="clip-meta">
+        saved as <b id="review-filename">—</b> in <b>MyDrive/YT_Clips</b>
+      </div>
+      <div class="hint">Preview shown at 360p for fast loading — the saved file on Drive keeps its full resolution.</div>
+
+      <div class="status" id="review-status"></div>
+
+      <div class="btn-row">
+        <button class="btn-primary" id="keep-clip-btn">Keep clip</button>
+        <button class="btn-danger" id="delete-clip-btn">Delete clip</button>
+      </div>
+      <div class="hint">Watch it back above. If it's not right, delete it from Drive — or go back and re-crop a different range.</div>
+    </div>
+
+    <button class="btn-ghost" id="reclip-btn">← adjust range</button>
+    <button class="btn-ghost" id="new-video-btn" style="margin-left:8px;">start over with new video</button>
   </div>
 
   <footer>personal use only · downloaded videos are not stored beyond this session</footer>
@@ -622,6 +674,7 @@ function destroyPlayer() {
 function goToPage2() {
   $('page-1').style.display = 'none';
   $('page-2').style.display = 'block';
+  $('page-3').style.display = 'none';
   $('header-sub').textContent = 'drag the handles to pick your clip';
 
   rangeStart = 0;
@@ -769,6 +822,8 @@ track().addEventListener('click', (e) => {
 // ============================================================
 // Crop and save
 // ============================================================
+let currentClipFilename = null; // filename of the clip currently saved on Drive, shown on page 3
+
 $('crop-btn').addEventListener('click', async () => {
   const api = backendUrl();
   const statusEl = $('crop-status');
@@ -812,11 +867,101 @@ $('crop-btn').addEventListener('click', async () => {
     }
 
     setStatus(statusEl, 'success', `Saved as "${data.filename}" in MyDrive/YT_Clips`);
+    // New: jump to the review screen so the saved clip can be watched back
+    // and deleted from Drive right away if it isn't the right cut.
+    goToPage3(data);
   } catch (err) {
     setStatus(statusEl, 'error', 'Error: ' + err.message);
   } finally {
     $('crop-btn').disabled = false;
   }
+});
+
+// ============================================================
+// PAGE 3 -> Review saved clip + delete
+// ============================================================
+function goToPage3(cropData) {
+  currentClipFilename = cropData.filename;
+
+  $('page-2').style.display = 'none';
+  $('page-3').style.display = 'block';
+  $('header-sub').textContent = 'review your saved clip';
+
+  const video = $('review-video');
+  // preview_url is served by the backend's /clips static mount (added alongside /files)
+  const src = cropData.preview_url
+    ? `${backendUrl()}${cropData.preview_url}`
+    : `${backendUrl()}/clips/${encodeURIComponent(cropData.filename)}`;
+  video.src = src;
+  video.load();
+
+  $('review-filename').textContent = cropData.filename || '—';
+  $('review-status').className = 'status';
+  $('delete-clip-btn').disabled = false;
+  $('delete-clip-btn').textContent = 'Delete clip';
+}
+
+function stopReviewVideo() {
+  const video = $('review-video');
+  video.pause();
+  video.removeAttribute('src');
+  video.load();
+}
+
+$('keep-clip-btn').addEventListener('click', () => {
+  // Nothing to do server-side — the clip already lives in MyDrive/YT_Clips.
+  // Just acknowledge and let them carry on browsing the review screen.
+  setStatus($('review-status'), 'success', 'Kept. It stays in MyDrive/YT_Clips.');
+});
+
+$('delete-clip-btn').addEventListener('click', async () => {
+  if (!currentClipFilename) return;
+  const api = backendUrl();
+  const statusEl = $('review-status');
+
+  if (!confirm(`Delete "${currentClipFilename}" from MyDrive/YT_Clips? This cannot be undone.`)) {
+    return;
+  }
+
+  $('delete-clip-btn').disabled = true;
+  setStatus(statusEl, 'info', 'Deleting from Drive…');
+
+  try {
+    const res = await fetch(`${api}/clip/${encodeURIComponent(currentClipFilename)}`, {
+      method: 'DELETE'
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Delete failed');
+
+    stopReviewVideo();
+    setStatus(statusEl, 'success', `Deleted "${currentClipFilename}".`);
+    currentClipFilename = null;
+    $('delete-clip-btn').textContent = 'Deleted';
+  } catch (err) {
+    setStatus(statusEl, 'error', 'Error: ' + err.message);
+    $('delete-clip-btn').disabled = false;
+  }
+});
+
+// go back to page 2 to re-crop a different range from the SAME downloaded source
+// (does not re-download — currentVideoId / ytIdForPreview are still valid)
+$('reclip-btn').addEventListener('click', () => {
+  stopReviewVideo();
+  $('page-3').style.display = 'none';
+  goToPage2();
+});
+
+// fully reset back to page 1 for a brand new video
+$('new-video-btn').addEventListener('click', () => {
+  stopReviewVideo();
+  currentClipFilename = null;
+  currentVideoId = null;
+  $('page-3').style.display = 'none';
+  $('page-1').style.display = 'block';
+  $('header-sub').textContent = 'paste → preview → crop → saved to Drive';
+  $('yt-url').value = '';
+  $('load-status').className = 'status';
+  $('progress-block').classList.remove('show', 'indeterminate');
 });
 </script>
 </body>
