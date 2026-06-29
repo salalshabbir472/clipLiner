@@ -516,10 +516,7 @@ function fmtTimeCrop(sec) {
   return `${String(m).padStart(2,'0')}:${s.padStart(6,'0')}`;
 }
 
-function extractVideoId(url) {
-  const m = url.match(/(?:youtube\.com\/.*v=|youtu\.be\/)([^&\s]+)/);
-  return m ? m[1] : null;
-}
+
 
 // ============================================================
 // PAGE 1 -> Download
@@ -638,6 +635,21 @@ function goToPage2() {
   // #page-2 (it was display:none a moment ago; creating YT.Player while the
   // container has zero size produces an invisible 0×0 iframe).
   requestAnimationFrame(() => initYTPlayer(ytIdForPreview));
+}
+  
+function extractVideoId(url) {
+  const patterns = [
+    /[?&]v=([^&\s]+)/,                    // watch?v=
+    /youtu\.be\/([^?&\s]+)/,              // youtu.be/
+    /youtube\.com\/shorts\/([^?&\s]+)/,   // shorts
+    /youtube\.com\/live\/([^?&\s]+)/,     // live
+    /youtube\.com\/embed\/([^?&\s]+)/,    // embed
+  ];
+  for (const p of patterns) {
+    const m = url.match(p);
+    if (m) return m[1];
+  }
+  return null;
 }
 
 function initYTPlayer(youtubeId) {
