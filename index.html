@@ -259,6 +259,38 @@
   .info-card .info-row { color: var(--ink-dim); }
   .info-card .info-row b { color: var(--accent); font-weight: 600; }
 
+  /* ---- Follow-playback controls ---- */
+  .follow-row {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--line);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .follow-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    color: var(--ink-dim);
+    font-size: 10px;
+    line-height: 1.3;
+  }
+  .follow-label input[type=checkbox] { cursor: pointer; accent-color: var(--accent); flex-shrink: 0; }
+  #follow-gap-wrap { display: none; flex-direction: column; gap: 4px; }
+  #follow-gap-select, #follow-gap-custom {
+    font-size: 10px;
+    padding: 5px 6px;
+    background: var(--bg);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    font-family: var(--mono);
+    width: 100%;
+  }
+  #follow-gap-custom { display: none; }
+
   /* ---- Dual-handle range slider ---- */
   .slider-block { margin-bottom: 16px; }
 
@@ -432,6 +464,23 @@
           <div class="info-title" id="info-title">—</div>
           <div class="info-row">duration <b id="info-duration">0:00</b></div>
           <div class="info-row">res <b id="info-res">—</b></div>
+
+          <div class="follow-row">
+            <label class="follow-label" for="follow-toggle">
+              <input type="checkbox" id="follow-toggle" />
+              <span>Front follows watch pointer</span>
+            </label>
+            <div id="follow-gap-wrap">
+              <select id="follow-gap-select">
+                <option value="10">gap 10s</option>
+                <option value="15">gap 15s</option>
+                <option value="30" selected>gap 30s</option>
+                <option value="60">gap 1m</option>
+                <option value="custom">custom…</option>
+              </select>
+              <input type="text" id="follow-gap-custom" placeholder="gap in seconds" />
+            </div>
+          </div>
         </div>
       </div>
 
@@ -455,7 +504,7 @@
 
       <button class="btn-primary" id="crop-btn">Crop and save</button>
       <div class="status" id="crop-status"></div>
-      <div class="hint">Drag either handle along the bar, or play the video and drag while watching. Click the bar itself to jump playback there.</div>
+      <div class="hint">Drag either handle along the bar, or play the video and drag while watching. Click the bar itself to jump playback there. Dragging a handle only previews that frame — it never moves your actual watch position. Tick "front follows watch pointer" to have the end handle track playback live, with the start handle trailing by the chosen gap.</div>
 
       <!-- Review block: appears right here, in the same crop panel, once a crop is saved -->
       <div class="review-block" id="review-block" style="display:none;">
@@ -649,6 +698,19 @@ let rangeEnd = 0;      // seconds (float)
 let draggingHandle = null; // 'start' | 'end' | null
 const track = () => $('slider-track');
 
+// "video watch pointer" — the actual playback position the user has
+// watched/played to. This is INTENTIONALLY decoupled from rangeStart/rangeEnd:
+// dragging the front/back handles must never move it. It only changes when
+// the video actually plays, or the user explicitly seeks (clicking the bar,
+// or playing/scrubbing the YouTube player itself).
+let lastWatchedTime = 0;
+
+// "front follows watch pointer" mode — when on, the end (front) handle
+// tracks lastWatchedTime live, and the start (back) handle trails behind it
+// by followGapSeconds. Manually dragging a handle turns this off again.
+let followMode = false;
+let followGapSeconds = 30;
+
 // Called by the YT IFrame API script when it finishes loading (global hook)
 function onYouTubeIframeAPIReady() {
   ytApiReady = true;
@@ -679,6 +741,14 @@ function goToPage2() {
 
   rangeStart = 0;
   rangeEnd = videoDuration;
+  lastWatchedTime = 0;
+  followMode = false;
+  $('follow-toggle').checked = false;
+  $('follow-gap-wrap').style.display = 'none';
+  $('follow-gap-select').value = '30';
+  $('follow-gap-custom').style.display = 'none';
+  $('follow-gap-custom').value = '';
+  followGapSeconds = 30;
   updateSliderUI();
 
   // Always start fresh — destroy any previous player instance first
@@ -746,8 +816,19 @@ function startPolling() {
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = setInterval(() => {
     if (ytPlayer && ytPlayer.getCurrentTime) {
-      const t = ytPlayer.getCurrentTime();
-      const pct = videoDuration ? (t / videoDuration) * 100 : 0;
+      // While a handle is being dragged we still call seekTo() on the player
+      // for a live frame preview, but that must NOT count as "watching" —
+      // so we simply skip updating lastWatchedTime until the drag ends.
+      if (!draggingHandle) {
+        lastWatchedTime = ytPlayer.getCurrentTime();
+
+        if (followMode) {
+          rangeEnd = Math.min(videoDuration, lastWatchedTime);
+          rangeStart = Math.max(0, rangeEnd - followGapSeconds);
+          updateSliderUI();
+        }
+      }
+      const pct = videoDuration ? (lastWatchedTime / videoDuration) * 100 : 0;
       $('slider-playhead').style.left = pct + '%';
     }
   }, 200);
@@ -777,8 +858,25 @@ function updateSliderUI() {
 }
 
 function startDrag(handle, e) {
+  // Manually grabbing a handle is an explicit override — turn off
+  // follow-mode so the user's drag isn't immediately fought by the poller.
+  if (followMode) {
+    followMode = false;
+    $('follow-toggle').checked = false;
+    $('follow-gap-wrap').style.display = 'none';
+  }
   draggingHandle = handle;
   e.preventDefault();
+}
+
+function endDrag() {
+  if (draggingHandle && ytPlayer && ytPlayer.seekTo) {
+    // Dragging only previewed frames via temporary seeks — restore actual
+    // playback to wherever the user was really watching, so the "video
+    // watch pointer" is left exactly as it was before the drag started.
+    ytPlayer.seekTo(lastWatchedTime, true);
+  }
+  draggingHandle = null;
 }
 
 function clientXFromEvent(e) {
@@ -793,8 +891,8 @@ $('handle-end').addEventListener('touchstart', (e) => startDrag('end', e));
 
 window.addEventListener('mousemove', (e) => handleDragMove(clientXFromEvent(e)));
 window.addEventListener('touchmove', (e) => handleDragMove(clientXFromEvent(e)));
-window.addEventListener('mouseup', () => { draggingHandle = null; });
-window.addEventListener('touchend', () => { draggingHandle = null; });
+window.addEventListener('mouseup', endDrag);
+window.addEventListener('touchend', endDrag);
 
 // FIX 2: minimum gap is now 1.0s (was 0.5s) — large enough that even after
 // decimal truncation on the backend the clip never collapses to zero length
@@ -819,6 +917,46 @@ track().addEventListener('click', (e) => {
   if (e.target.classList.contains('handle')) return;
   const sec = secondsFromClientX(e.clientX);
   if (ytPlayer && ytPlayer.seekTo) ytPlayer.seekTo(sec, true);
+});
+
+// ============================================================
+// Front-follows-watch-pointer mode
+// ============================================================
+$('follow-toggle').addEventListener('change', (e) => {
+  followMode = e.target.checked;
+  $('follow-gap-wrap').style.display = followMode ? 'flex' : 'none';
+  if (followMode) {
+    // snap immediately to the current watch position instead of waiting
+    // for the next poll tick
+    rangeEnd = Math.min(videoDuration, lastWatchedTime);
+    rangeStart = Math.max(0, rangeEnd - followGapSeconds);
+    updateSliderUI();
+  }
+});
+
+$('follow-gap-select').addEventListener('change', (e) => {
+  if (e.target.value === 'custom') {
+    $('follow-gap-custom').style.display = 'block';
+    $('follow-gap-custom').focus();
+  } else {
+    $('follow-gap-custom').style.display = 'none';
+    followGapSeconds = parseFloat(e.target.value) || 30;
+    if (followMode) {
+      rangeStart = Math.max(0, rangeEnd - followGapSeconds);
+      updateSliderUI();
+    }
+  }
+});
+
+$('follow-gap-custom').addEventListener('input', (e) => {
+  const v = parseFloat(e.target.value);
+  if (!isNaN(v) && v > 0) {
+    followGapSeconds = v;
+    if (followMode) {
+      rangeStart = Math.max(0, rangeEnd - followGapSeconds);
+      updateSliderUI();
+    }
+  }
 });
 
 // ============================================================
